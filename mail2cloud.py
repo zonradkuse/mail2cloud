@@ -3,6 +3,8 @@ import os
 import ssl
 import logging
 import socket
+import io
+from urllib.parse import urlparse
 
 from attachment import Attachment
 
@@ -10,6 +12,10 @@ import email
 from email.policy import SMTPUTF8
 
 from imapclient import IMAPClient, SEEN
+
+import ftplib
+
+_PROTOCOLS = ["FTP", "FTPS"]
 
 def main():
     args = parse_arguments()
@@ -143,19 +149,40 @@ def get_attachments(message):
 def save_source_messages(messages, destination):
     for message in messages:
         base_name = construct_target_filename_base(message)
-        file = open(f"{destination}/{base_name}.eml", 'wb')
-        file.write(message.as_bytes())
-        file.close()
+        write_to_destination(f"{destination}/{base_name}.eml", message.as_bytes())
 
 def save_attachments(attachments, destination):
     for attachment in attachments:
         base_name = construct_target_filename_base(attachment.origin)
-        file = open(f"{destination}/{base_name}-{attachment.name}", 'wb')
-        file.write(attachment.data)
-        file.close()
+        write_to_destination(f"{destination}/{base_name}-{attachment.name}", attachment.data)
 
 def construct_target_filename_base(message):
-    return f"{message.get('Date')}-{message.get('From')}-{message.get('Subject')}"
+    timestamp = message.get('Date').datetime.strftime('%Y-%m-%d-%H%M%S')
+    return f"{timestamp}-{message.get('From')}-{message.get('Subject')}"
+
+def write_to_destination(full_path, data):
+    has_protocols = [full_path.upper().startswith(proto) for proto in _PROTOCOLS]
+    if True in has_protocols:
+        # TODO build protocol handlers to handle the specific protocol
+        if full_path.upper().startswith("FTPS"):
+            logging.getLogger("mail2cloud.ftps").info("Uploading file via ftps.")
+            # determine url parts
+            parsed_url = urlparse(full_path)
+            bind_addr = parsed_url.netloc
+            sess = ftplib.FTP_TLS(bind_addr, os.environ["FTP_USERNAME"], os.environ["FTP_PASSWORD"])
+            sess.encoding = 'utf-8'
+            sess.storbinary(f'STOR {parsed_url.path}', io.BytesIO(data))
+            sess.quit()
+
+    else:
+        file = open(full_path, 'wb')
+        file.write(data)
+        file.close()
+
+def mark_as_seen(server, messages):
+    select_folder(server, False)
+    server.add_flags(messages, [SEEN])
+
 
 if __name__ == "__main__":
     main()
