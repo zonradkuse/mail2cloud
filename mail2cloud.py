@@ -2,13 +2,14 @@ import argparse
 import os
 import ssl
 import logging
+import socket
 
 from attachment import Attachment
 
 import email
 from email.policy import SMTPUTF8
 
-from imapclient import IMAPClient
+from imapclient import IMAPClient, SEEN
 
 def main():
     args = parse_arguments()
@@ -20,26 +21,39 @@ def main():
                         host_check=args.host_check,
                         verify_certificate=args.verify_certificate)
 
-    messages = check_unread_mails(imap_connector)
+    checked = False
+    while args.service or not checked:
+        checked = True # since python doesn't do do-while
+        messages = check_unread_mails(imap_connector)
 
-    if len(messages) < 1:
-        logging.getLogger("IMAP").info("No new messages")
-    else:
-        attachments = extract_all_attachments(messages)
-        source_messages = set([att.origin for att in attachments])
-        save_source_messages(source_messages, args.target)
-        save_attachments(attachments, args.target)
+        if len(messages) < 1:
+            logging.getLogger("IMAP").info("No new messages")
+        else:
+            attachments = extract_all_attachments(messages)
+            source_messages = set([att.origin for att in attachments])
+            save_source_messages(source_messages, args.target)
+            save_attachments(attachments, args.target)
+
+        if args.service:
+            try:
+                imap_connector.idle()
+                imap_connector.idle_check(timeout=180)
+            except socket.error as e:
+                logging.getLogger("mail2cloud").error(f"A network error occured during wait: {e}")
+            finally: # make sure to close this in case anything odd happens.
+                imap_connector.idle_done()
 
 def parse_arguments():
     parser = argparse.ArgumentParser()
 
     parser.add_argument('host', help='mail host to check for arriving attachments')
-    parser.add_argument('user', help='mail user')
+    parser.add_argument('target', help='the destination to copy to. By default this is a os file path. Specify the protocol for any other method, example https, webdav or sftp.')
+
+    parser.add_argument('--user', help='mail user')
     parser.add_argument('--service', dest='service', action='store_true', help='run this as a service and continuously check for arriving attachments.')
     parser.add_argument('--ssl-disabled', dest='ssl_enabled', action='store_false', help="Disable SSL entirely. Don't do this!")
     parser.add_argument('--no-check-certificate-host', dest='host_check', action='store_false', help="Don't check the certificate host.")
     parser.add_argument('--no-verify-certificate', dest='verify_certificate', action='store_false', help="Don't verify the server certificate.")
-    parser.add_argument('target', help='the destination to copy to. By default this is a os file path. Specify the protocol for any other method, example https, webdav or sftp.')
     parser.add_argument("--password", help='mail password. os.environ[MAIL_PASSWORD] if absent')
     parser.add_argument('--v', dest='v', action='store_true', help="Enable debug log")
     parser.add_argument('--vvv', dest='vvv', action='store_true', help="Enable trace log")
@@ -49,6 +63,7 @@ def parse_arguments():
     parser.set_defaults(verify_certificate=True)
     parser.set_defaults(v=False)
     parser.set_defaults(vvv=False)
+    parser.set_defaults(user=os.environ["MAIL_USER"] if "MAIL_USER" in os.environ else None)
     parser.set_defaults(password=os.environ["MAIL_PASSWORD"] if "MAIL_PASSWORD" in os.environ else None)
 
     args = parser.parse_args()
@@ -88,12 +103,15 @@ def connect_imap(host, username, password, **kwargs):
     return imap
 
 def check_unread_mails(server):
-    server.select_folder('INBOX', readonly=True)
+    select_folder(server, False)
     messages = server.search('UNSEEN')
 
     logging.getLogger("IMAP").info("Fetching unread messages. This might take a bit...")
 
     return server.fetch(messages, 'RFC822').items()
+
+def select_folder(server, ro = True):
+    server.select_folder('INBOX', readonly=ro)
 
 def extract_all_attachments(messages):
     result = []
@@ -107,6 +125,9 @@ def extract_all_attachments(messages):
 def get_attachments(message):
     result = []
     for raw_attachment in message.iter_attachments():
+        if raw_attachment.get_filename() is None:
+            continue
+
         raw_file = raw_attachment.get_payload(decode=True)
         attachment = Attachment(raw_attachment.get_filename(),
                  raw_file,
