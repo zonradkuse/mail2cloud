@@ -1,3 +1,4 @@
+# supplementary
 import argparse
 import os
 import ssl
@@ -6,11 +7,12 @@ import socket
 import io
 from urllib.parse import urlparse
 
+# local
 from attachment import Attachment
 
+# email
 import email
 from email.policy import SMTPUTF8
-
 from imapclient import IMAPClient, SEEN
 
 import ftplib
@@ -30,21 +32,26 @@ def main():
     checked = False
     while args.service or not checked:
         checked = True # since python doesn't do do-while
-        messages = check_unread_mails(imap_connector)
+        messages_raw = check_unread_mails(imap_connector)
 
-        if len(messages) < 1:
+        if len(messages_raw) < 1:
             logging.getLogger("IMAP").info("No new messages")
         else:
+            messages = [email.message_from_bytes(m[b'RFC822'], policy=SMTPUTF8) for mid, m in messages_raw.items()]
             attachments = extract_all_attachments(messages)
-            source_messages = set([att.origin for att in attachments])
-            save_source_messages(source_messages, args.target)
+            save_source_messages(messages, args.target)
             save_attachments(attachments, args.target)
+
+            logging.getLogger("mail2cloud").info(f"Finished uploading {len(attachments)} attachments from {len(messages)} messages total.")
+
+            # by now we have checked all new mail so we mark everything as seen
+            mark_as_seen(imap_connector, messages_raw)
 
         if args.service:
             try:
                 imap_connector.idle()
                 imap_connector.idle_check(timeout=180)
-            except socket.error as e:
+            except (TimeoutError, socket.error) as e:
                 logging.getLogger("mail2cloud").error(f"A network error occured during wait: {e}")
             finally: # make sure to close this in case anything odd happens.
                 imap_connector.idle_done()
@@ -109,21 +116,20 @@ def connect_imap(host, username, password, **kwargs):
     return imap
 
 def check_unread_mails(server):
-    select_folder(server, False)
+    select_folder(server)
     messages = server.search('UNSEEN')
 
     logging.getLogger("IMAP").info("Fetching unread messages. This might take a bit...")
 
-    return server.fetch(messages, 'RFC822').items()
+    return server.fetch(messages, 'RFC822')
 
 def select_folder(server, ro = True):
     server.select_folder('INBOX', readonly=ro)
 
 def extract_all_attachments(messages):
     result = []
-    for uid, message_data in messages:
-        email_message = email.message_from_bytes(message_data[b'RFC822'], policy=SMTPUTF8)
-        result.extend(get_attachments(email_message))
+    for message in messages:
+        result.extend(get_attachments(message))
 
     logging.getLogger("mail2cloud").info(f"Fetched a total of {len(result)} attachments.")
     return result
