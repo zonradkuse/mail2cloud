@@ -29,32 +29,39 @@ def main():
                         host_check=args.host_check,
                         verify_certificate=args.verify_certificate)
 
-    checked = False
-    while args.service or not checked:
-        checked = True # since python doesn't do do-while
-        messages_raw = check_unread_mails(imap_connector)
+    if args.service:
+        while True:
+            process_inbox(imap_connector, args.target)
+            imap_idle(imap_connector)
 
-        if len(messages_raw) < 1:
-            logging.getLogger("IMAP").info("No new messages")
-        else:
-            messages = [email.message_from_bytes(m[b'RFC822'], policy=SMTPUTF8) for mid, m in messages_raw.items()]
-            attachments = extract_all_attachments(messages)
-            save_source_messages(messages, args.target)
-            save_attachments(attachments, args.target)
+    else:
+        process_inbox(imap_connector, args.target)
 
-            logging.getLogger("mail2cloud").info(f"Finished uploading {len(attachments)} attachments from {len(messages)} messages total.")
 
-            # by now we have checked all new mail so we mark everything as seen
-            mark_as_seen(imap_connector, messages_raw)
+def process_inbox(imap_connector, destination):
+    messages_raw = check_unread_mails(imap_connector)
 
-        if args.service:
-            try:
-                imap_connector.idle()
-                imap_connector.idle_check(timeout=180)
-            except (TimeoutError, socket.error) as e:
-                logging.getLogger("mail2cloud").error(f"A network error occured during wait: {e}")
-            finally: # make sure to close this in case anything odd happens.
-                imap_connector.idle_done()
+    if len(messages_raw) < 1:
+        logging.getLogger("IMAP").info("No new messages")
+    else:
+        messages = [email.message_from_bytes(m[b'RFC822'], policy=SMTPUTF8) for mid, m in messages_raw.items()]
+        attachments = extract_all_attachments(messages)
+        save_source_messages(messages, args.target)
+        save_attachments(attachments, args.target)
+
+        logging.getLogger("mail2cloud").info(f"Finished uploading {len(attachments)} attachments from {len(messages)} messages total.")
+
+        # by now we have checked all new mail so we mark everything as seen
+        mark_as_seen(imap_connector, messages_raw)
+
+def imap_idle(imap_connector):
+    try:
+        imap_connector.idle()
+        imap_connector.idle_check(timeout=180)
+    except (TimeoutError, socket.error) as e:
+        logging.getLogger("mail2cloud").error(f"A network error occured during wait: {e}")
+    finally: # make sure to close this in case anything odd happens.
+        imap_connector.idle_done()
 
 def parse_arguments():
     parser = argparse.ArgumentParser()
@@ -69,13 +76,11 @@ def parse_arguments():
     parser.add_argument('--no-verify-certificate', dest='verify_certificate', action='store_false', help="Don't verify the server certificate.")
     parser.add_argument("--password", help='mail password. os.environ[MAIL_PASSWORD] if absent')
     parser.add_argument('--v', dest='v', action='store_true', help="Enable debug log")
-    parser.add_argument('--vvv', dest='vvv', action='store_true', help="Enable trace log")
 
     parser.set_defaults(service=False)
     parser.set_defaults(host_check=True)
     parser.set_defaults(verify_certificate=True)
     parser.set_defaults(v=False)
-    parser.set_defaults(vvv=False)
     parser.set_defaults(user=os.environ["MAIL_USER"] if "MAIL_USER" in os.environ else None)
     parser.set_defaults(password=os.environ["MAIL_PASSWORD"] if "MAIL_PASSWORD" in os.environ else None)
 
