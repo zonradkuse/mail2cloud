@@ -32,14 +32,14 @@ def main():
 
     if args.service:
         while True:
-            process_inbox(imap_connector, args.target)
+            process_inbox(imap_connector, args.target, args.save_raw)
             imap_idle(imap_connector)
 
     else:
-        process_inbox(imap_connector, args.target)
+        process_inbox(imap_connector, args.target, args.save_raw)
 
 
-def process_inbox(imap_connector, destination):
+def process_inbox(imap_connector, destination, save_raw):
     messages_raw = check_unread_mails(imap_connector)
 
     if len(messages_raw) < 1:
@@ -47,7 +47,9 @@ def process_inbox(imap_connector, destination):
     else:
         messages = [email.message_from_bytes(m[b'RFC822'], policy=SMTPUTF8) for mid, m in messages_raw.items()]
         attachments = extract_all_attachments(messages)
-        save_source_messages(messages, destination)
+        if save_raw:
+            save_source_messages(messages, destination)
+
         save_attachments(attachments, destination)
 
         logging.getLogger("mail2cloud").info(f"Finished uploading {len(attachments)} attachments from {len(messages)} messages total.")
@@ -65,20 +67,30 @@ def imap_idle(imap_connector):
         imap_connector.idle_done()
 
 def parse_arguments():
-    parser = argparse.ArgumentParser()
+    epilog='''example usage:
 
-    parser.add_argument('host', help='mail host to check for arriving attachments')
-    parser.add_argument('target', help='the destination to copy to. By default this is a os file path. Specify the protocol for any other method, example https, webdav or sftp.')
+      FTP_USER=<> FTP_PASSWORD=<> MAIL_USER=<> MAIL_PASSWORD=<> python mail2cloud.py mail.yourhost ftps://ftp.yourhost/youdirectory
+      MAIL_USER=<> MAIL_PASSWORD=<> python mail2cloud.py mail.yourhost /tmp'''
 
-    parser.add_argument('--user', help='mail user')
-    parser.add_argument('--service', dest='service', action='store_true', help='run this as a service and continuously check for arriving attachments.')
-    parser.add_argument('--ssl-disabled', dest='ssl_enabled', action='store_false', help="Disable SSL entirely. Don't do this!")
-    parser.add_argument('--no-check-certificate-host', dest='host_check', action='store_false', help="Don't check the certificate host.")
+    parser = argparse.ArgumentParser(epilog=epilog,
+            formatter_class=argparse.RawDescriptionHelpFormatter)
+
+    parser.add_argument('--v', dest='v', action='store_true', help="Enable debug log.")
+    parser.add_argument('--service', dest='service', action='store_true', help='Run mail2cloud as a service and continuously check for arriving attachments.')
+
+    parser.add_argument('host', help='Mail host to check for arriving attachments.')
+    parser.add_argument('target', help='Destination to copy to. By default this is a os file path. Specify the protocol for any other method. For example ftps://<>.')
+
+    parser.add_argument('--additionally-save-raw-emails', dest='save_raw', action='store_true', help='Save all arriving emails in a thunderbird readable format to the target.')
+
+    parser.add_argument('--user', help='Mail user. os.environ[MAIL_USER] if absent.')
+    parser.add_argument("--password", help='Mail password. os.environ[MAIL_PASSWORD] if absent.')
+    parser.add_argument('--ssl-disabled', dest='ssl_enabled', action='store_false', help="Disable IMAP SSL/TLS entirely. Don't do this!")
+    parser.add_argument('--no-check-certificate-host', dest='host_check', action='store_false', help="Don't check the IMAP certificate host.")
     parser.add_argument('--no-verify-certificate', dest='verify_certificate', action='store_false', help="Don't verify the server certificate.")
-    parser.add_argument("--password", help='mail password. os.environ[MAIL_PASSWORD] if absent')
-    parser.add_argument('--v', dest='v', action='store_true', help="Enable debug log")
 
     parser.set_defaults(service=False)
+    parser.set_defaults(save_raw=False)
     parser.set_defaults(host_check=True)
     parser.set_defaults(verify_certificate=True)
     parser.set_defaults(v=False)
