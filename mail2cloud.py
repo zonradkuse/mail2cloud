@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 # local
 from attachment import Attachment
+from handlers import FTPHandler, FTPSHandler
 
 # email
 import email
@@ -17,7 +18,7 @@ from imapclient import IMAPClient, SEEN
 
 import ftplib
 
-_PROTOCOLS = ["FTP", "FTPS"]
+_HANDLERS = [FTPHandler(), FTPSHandler()]
 
 def main():
     args = parse_arguments()
@@ -42,12 +43,12 @@ def process_inbox(imap_connector, destination):
     messages_raw = check_unread_mails(imap_connector)
 
     if len(messages_raw) < 1:
-        logging.getLogger("IMAP").info("No new messages")
+        logging.getLogger("mail2cloud.imap").info("No new messages")
     else:
         messages = [email.message_from_bytes(m[b'RFC822'], policy=SMTPUTF8) for mid, m in messages_raw.items()]
         attachments = extract_all_attachments(messages)
-        save_source_messages(messages, args.target)
-        save_attachments(attachments, args.target)
+        save_source_messages(messages, destination)
+        save_attachments(attachments, destination)
 
         logging.getLogger("mail2cloud").info(f"Finished uploading {len(attachments)} attachments from {len(messages)} messages total.")
 
@@ -116,7 +117,7 @@ def connect_imap(host, username, password, **kwargs):
         imap = IMAPClient(host)
 
     imap.login(username, password)
-    logging.getLogger("IMAP").info(f"Successfully connected to {host}")
+    logging.getLogger("mail2cloud.imap").info(f"Successfully connected to {host}")
 
     return imap
 
@@ -124,7 +125,7 @@ def check_unread_mails(server):
     select_folder(server)
     messages = server.search('UNSEEN')
 
-    logging.getLogger("IMAP").info("Fetching unread messages. This might take a bit...")
+    logging.getLogger("mail2cloud.imap").info("Fetching unread messages. This might take a bit...")
 
     return server.fetch(messages, 'RFC822')
 
@@ -153,7 +154,7 @@ def get_attachments(message):
                  message)
 
         result.append(attachment)
-        logging.getLogger("IMAP").info(f"Found attachment {attachment}.")
+        logging.getLogger("mail2cloud.imap").info(f"Found attachment {attachment}.")
 
     return result
 
@@ -172,18 +173,10 @@ def construct_target_filename_base(message):
     return f"{timestamp}-{message.get('From')}-{message.get('Subject')}"
 
 def write_to_destination(full_path, data):
-    has_protocols = [full_path.upper().startswith(proto) for proto in _PROTOCOLS]
-    if True in has_protocols:
-        # TODO build protocol handlers to handle the specific protocol
-        if full_path.upper().startswith("FTPS"):
-            logging.getLogger("mail2cloud.ftps").info("Uploading file via ftps.")
-            # determine url parts
-            parsed_url = urlparse(full_path)
-            bind_addr = parsed_url.netloc
-            sess = ftplib.FTP_TLS(bind_addr, os.environ["FTP_USERNAME"], os.environ["FTP_PASSWORD"])
-            sess.encoding = 'utf-8'
-            sess.storbinary(f'STOR {parsed_url.path}', io.BytesIO(data))
-            sess.quit()
+    has_handlers = [handler.applies(full_path) for handler in _HANDLERS]
+    if True in has_handlers:
+        handler = _HANDLERS[has_handlers.index(True)]
+        handler.write(full_path, data)
 
     else:
         file = open(full_path, 'wb')
